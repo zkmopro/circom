@@ -3,6 +3,7 @@ use crate::intermediate_representation::translate::OutBoundsCheck;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 
 #[derive(Clone)]
 pub struct LoadBucket {
@@ -498,6 +499,120 @@ impl WriteC for LoadBucket {
         };
         
 	//prologue.push(format!("// end of load line {} with access {}",self.line.to_string(),access));
+        (prologue, access)
+    }
+}
+
+impl WriteRust for LoadBucket {
+    fn produce_rust(&self, producer: &RustProducer, parallel: Option<bool>) -> (Vec<String>, String) {
+        let mut prologue = vec![];
+
+        // Compute cmp_index for SubcmpSignal
+        let cmp_idx_ref = if let AddressType::SubcmpSignal { cmp_address, .. } = &self.address_type {
+            let (mut cmp_code, cmp_idx) = cmp_address.produce_rust(producer, parallel);
+            prologue.append(&mut cmp_code);
+            prologue.push(format!("let cmp_index_ref_load = {} as usize;", cmp_idx));
+            "cmp_index_ref_load".to_string()
+        } else {
+            String::new()
+        };
+
+        let access = match &self.src {
+            LocationRule::Indexed { location, .. } => {
+                let (mut loc_code, loc_idx) = location.produce_rust(producer, parallel);
+                prologue.append(&mut loc_code);
+                match &self.address_type {
+                    AddressType::Variable => format!("lvar[{} as usize]", loc_idx),
+                    AddressType::Signal => {
+                        format!("ctx.signal_values[my_signal_start + {} as usize]", loc_idx)
+                    }
+                    AddressType::SubcmpSignal { .. } => {
+                        format!(
+                            "ctx.signal_values[ctx.component_memory[my_subcomponents[{}]].signal_start + {} as usize]",
+                            cmp_idx_ref, loc_idx
+                        )
+                    }
+                }
+            }
+            LocationRule::Mapped { signal_code, indexes } => {
+                // Only SubcmpSignal can be Mapped
+                let l = self.line;
+                prologue.push(format!(
+                    "let _cmp_tid_{l} = ctx.component_memory[my_subcomponents[{cmp}]].signal_start;",
+                    l = l, cmp = cmp_idx_ref
+                ));
+                prologue.push(format!(
+                    "let _io_base_{l} = ctx.io_map[&ctx.component_memory[my_subcomponents[{cmp}]].template_id][{sc}].0;",
+                    l = l, cmp = cmp_idx_ref, sc = signal_code
+                ));
+                prologue.push(format!("let mut _map_off_{} = _io_base_{};", l, l));
+
+                if !indexes.is_empty() {
+                    prologue.push(format!(
+                        "let _io_def_{l} = &ctx.io_map[&ctx.component_memory[my_subcomponents[{cmp}]].template_id][{sc}];",
+                        l = l, cmp = cmp_idx_ref, sc = signal_code
+                    ));
+                    let mut idxpos = 0usize;
+                    while idxpos < indexes.len() {
+                        match &indexes[idxpos] {
+                            AccessType::Indexed(index_info) => {
+                                let index_list = &index_info.indexes;
+                                let dim = index_info.symbol_dim;
+                                let (mut c0, mut idx_expr) = index_list[0].produce_rust(producer, parallel);
+                                prologue.append(&mut c0);
+                                for i in 1..index_list.len() {
+                                    let (mut ci, idx_i) = index_list[i].produce_rust(producer, parallel);
+                                    prologue.append(&mut ci);
+                                    idx_expr = format!(
+                                        "(({}) * _io_def_{}.2[{}]) + ({})",
+                                        idx_expr, l, i - 1, idx_i
+                                    );
+                                }
+                                let diff = dim - index_list.len();
+                                if diff > 0 {
+                                    for k in index_list.len()..dim {
+                                        idx_expr = format!("({}) * _io_def_{}.2[{}]", idx_expr, l, k - 1);
+                                    }
+                                }
+                                let elem_size = format!("_io_def_{}.1", l);
+                                prologue.push(format!(
+                                    "_map_off_{l} += ({ie}) * {es};",
+                                    l = l, ie = idx_expr, es = elem_size
+                                ));
+                                idxpos += 1;
+                                if idxpos < indexes.len() {
+                                    if let AccessType::Qualified(fno) = &indexes[idxpos] {
+                                        prologue.push(format!(
+                                            "let _bus_id_{l} = _io_def_{l}.3.unwrap();",
+                                            l = l
+                                        ));
+                                        prologue.push(format!(
+                                            "_map_off_{l} += ctx.bus_field_info[_bus_id_{l}][{fno}].0;",
+                                            l = l, fno = fno
+                                        ));
+                                        idxpos += 1;
+                                    }
+                                }
+                            }
+                            AccessType::Qualified(fno) => {
+                                let bus_id_src = format!("_io_def_{}.3.unwrap()", l);
+                                prologue.push(format!(
+                                    "_map_off_{l} += ctx.bus_field_info[{bid}][{fno}].0;",
+                                    l = l, bid = bus_id_src, fno = fno
+                                ));
+                                idxpos += 1;
+                            }
+                        }
+                    }
+                }
+
+                format!(
+                    "ctx.signal_values[ctx.component_memory[my_subcomponents[{cmp}]].signal_start + _map_off_{l}]",
+                    cmp = cmp_idx_ref, l = l
+                )
+            }
+        };
+
         (prologue, access)
     }
 }

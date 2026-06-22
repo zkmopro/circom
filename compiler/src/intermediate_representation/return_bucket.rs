@@ -2,6 +2,7 @@ use super::ir_interface::*;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 
 #[derive(Clone)]
 pub struct ReturnBucket {
@@ -100,10 +101,9 @@ impl WriteC for ReturnBucket {
         instructions.push("// return bucket".to_string());
         let (mut instructions_value, src) = self.value.produce_c(producer, parallel);
         instructions.append(&mut instructions_value);
-                
+
         if self.with_size > 1 {
             let final_size = format!("std::min({},{})", self.with_size, FUNCTION_DESTINATION_SIZE);
-
             let copy_arguments = if producer.prime_str != "goldilocks" {
                 vec![FUNCTION_DESTINATION.to_string(), src, final_size]
             } else {
@@ -116,5 +116,21 @@ impl WriteC for ReturnBucket {
         }
         instructions.push(add_return());
         (instructions, "".to_string())
+    }
+}
+
+impl WriteRust for ReturnBucket {
+    fn produce_rust(&self, producer: &RustProducer, parallel: Option<bool>) -> (Vec<String>, String) {
+        use code_producers::rust_elements::rust_code_generator::add_offset_to_expr;
+        let (mut val_code, val_expr) = self.value.produce_rust(producer, parallel);
+        if self.with_size > 1 {
+            let sz = format!("std::cmp::min({}, destination_size)", self.with_size);
+            val_code.push(format!("for _ri in 0..{} {{ destination[_ri] = {}.clone(); }}",
+                sz, add_offset_to_expr(&val_expr, "_ri")));
+        } else {
+            val_code.push(format!("destination[0] = {}.clone();", val_expr));
+        }
+        val_code.push("return;".to_string());
+        (val_code, String::new())
     }
 }

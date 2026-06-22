@@ -2,6 +2,7 @@ use super::ir_interface::*;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 
 #[derive(Clone)]
 pub struct AssertBucket {
@@ -73,7 +74,7 @@ impl WriteC for AssertBucket {
         if !self.is_constraint_equality || producer.sanity_check_style >= 1{
             let (mut prologue, value) = self.evaluate.produce_c(producer, parallel);
             let is_true = build_call("Fr_isTrue".to_string(), vec![value]);
-            let if_condition = format!("if (!{}) {};", is_true, build_failed_assert_message(self.line));    
+            let if_condition = format!("if (!{}) {};", is_true, build_failed_assert_message(self.line));
             let assertion = format!("{};", build_call("assert".to_string(), vec![is_true]));
             let mut assert_c = vec![];
             assert_c.push(format!("{{"));
@@ -85,5 +86,19 @@ impl WriteC for AssertBucket {
         } else{
             (Vec::new(), "".to_string())
         }
+    }
+}
+
+impl WriteRust for AssertBucket {
+    fn produce_rust(&self, producer: &RustProducer, parallel: Option<bool>) -> (Vec<String>, String) {
+        if self.is_constraint_equality {
+            return (vec![], String::new());
+        }
+        let (mut eval_code, eval_expr) = self.evaluate.produce_rust(producer, parallel);
+        eval_code.push(format!(
+            "assert!(fr_is_true(&{}), \"Assert failed at line {}\");",
+            eval_expr, self.line
+        ));
+        (eval_code, String::new())
     }
 }

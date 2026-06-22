@@ -2,6 +2,7 @@ use crate::intermediate_representation::InstructionList;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 use crate::hir::very_concrete_program::Wire;
 use program_structure::ast::SignalType;
 use crate::hir::very_concrete_program::Argument;
@@ -153,6 +154,12 @@ impl WriteWasm for TemplateCodeInfo {
         instructions.push(set_constant("0"));	
         instructions.push(")".to_string());
         instructions
+    }
+}
+
+impl WriteRust for TemplateCodeInfo {
+    fn produce_rust(&self, producer: &RustProducer, _parallel: Option<bool>) -> (Vec<String>, String) {
+        (self.produce_rust_code(producer), String::new())
     }
 }
 
@@ -471,6 +478,60 @@ impl TemplateCodeInfo {
         run_body.push(format!("}}"));
         let run_fun = build_callable(run_header, run_params, run_body);
         vec![create_fun, run_fun]
+    }
+
+    pub fn produce_rust_code(&self, producer: &RustProducer) -> Vec<String> {
+        let n_vars = self.var_stack_depth;
+        let n_expaux = self.expression_stack_depth;
+        let n_cmp = self.number_of_components;
+
+        // _create function
+        let create_header = format!(
+            "#[allow(non_snake_case)]\nfn {}_create(soffset: usize, coffset: usize, ctx: &mut CircomCalcWit, _component_name: &str, _component_father: usize)",
+            self.header
+        );
+        let mut create_body = vec![
+            format!("ctx.component_memory[coffset].template_id = {};", self.id),
+            format!("ctx.component_memory[coffset].signal_start = soffset;"),
+            format!("ctx.component_memory[coffset].input_counter = {};", self.number_of_inputs),
+            format!("ctx.component_memory[coffset].subcomponents = vec![0usize; {}];", n_cmp),
+        ];
+        // If no inputs, run immediately
+        if self.number_of_inputs == 0 {
+            create_body.push(format!(
+                "{{ let _tid = ctx.component_memory[coffset].template_id; let _f = ctx.run_template; _f(_tid, coffset, ctx); }}"
+            ));
+        }
+        let create_fn = format!("{} {{\n{}\n}}", create_header, create_body.join("\n"));
+
+        // _run function
+        let run_header = format!(
+            "#[allow(non_snake_case)]\nfn {}_run(ctx_index: usize, ctx: &mut CircomCalcWit)",
+            self.header
+        );
+        let subcomp_mut = if n_cmp > 0 { "mut " } else { "" };
+        let mut run_body = vec![
+            format!("let my_signal_start = ctx.component_memory[ctx_index].signal_start;"),
+            format!("let {subcomp_mut}my_subcomponents = ctx.component_memory[ctx_index].subcomponents.clone();"),
+            format!("let mut lvar: Vec<FrElement> = vec![FrElement::from(0u32); {}];", n_vars),
+            format!("let mut expaux: Vec<FrElement> = vec![FrElement::from(0u32); {}];", n_expaux),
+            "#[allow(unused_variables)]".to_string(),
+            "let component_father = ctx.component_memory[ctx_index].subcomponents.len();".to_string(),
+        ];
+
+        for t in &self.body {
+            let (mut code, _) = t.produce_rust(producer, Some(false));
+            run_body.append(&mut code);
+        }
+
+        // Update my_subcomponents back (create_component_bucket writes into it)
+        run_body.push(
+            "ctx.component_memory[ctx_index].subcomponents = my_subcomponents;".to_string()
+        );
+
+        let run_fn = format!("{} {{\n{}\n}}", run_header, run_body.join("\n"));
+
+        vec![create_fn, run_fn]
     }
 
     pub fn wrap(self) -> TemplateCode {

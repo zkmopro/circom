@@ -2,6 +2,7 @@ use super::ir_interface::*;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 
 #[derive(Clone)]
 pub struct LoopBucket {
@@ -88,5 +89,26 @@ impl WriteC for LoopBucket {
         let mut loop_c = continue_code;
         loop_c.push(while_loop);
         (loop_c, "".to_string())
+    }
+}
+
+impl WriteRust for LoopBucket {
+    fn produce_rust(&self, producer: &RustProducer, parallel: Option<bool>) -> (Vec<String>, String) {
+        // Emit: { let mut _cond_code...; while fr_is_true(&cond_expr) { body; cond_code; } }
+        let (init_cond_code, cond_expr) = self.continue_condition.produce_rust(producer, parallel);
+        let mut body = vec![];
+        for instr in &self.body {
+            let (mut code, _) = instr.produce_rust(producer, parallel);
+            body.append(&mut code);
+        }
+        // Re-evaluate condition at end of body
+        let (re_cond_code, _) = self.continue_condition.produce_rust(producer, parallel);
+        body.extend(re_cond_code);
+
+        let mut out: Vec<String> = init_cond_code.clone();
+        out.push(format!("while fr_is_true(&{}) {{", cond_expr));
+        out.extend(body);
+        out.push("}".to_string());
+        (out, String::new())
     }
 }

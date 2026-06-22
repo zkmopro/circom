@@ -19,6 +19,7 @@ pub use super::value_bucket::ValueBucket;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 
 pub trait IntoInstruction {
     fn into_instruction(self) -> Instruction;
@@ -143,6 +144,25 @@ impl WriteC for Instruction {
             Assert(v) => v.produce_c(producer, parallel),
             CreateCmp(v) => v.produce_c(producer, parallel),
             Log(v) => v.produce_c(producer, parallel),
+        }
+    }
+}
+
+impl WriteRust for Instruction {
+    fn produce_rust(&self, producer: &RustProducer, parallel: Option<bool>) -> (Vec<String>, String) {
+        use Instruction::*;
+        match self {
+            Value(v) => v.produce_rust(producer, parallel),
+            Load(v) => v.produce_rust(producer, parallel),
+            Store(v) => v.produce_rust(producer, parallel),
+            Compute(v) => v.produce_rust(producer, parallel),
+            Call(v) => v.produce_rust(producer, parallel),
+            Branch(v) => v.produce_rust(producer, parallel),
+            Return(v) => v.produce_rust(producer, parallel),
+            Loop(v) => v.produce_rust(producer, parallel),
+            Assert(v) => v.produce_rust(producer, parallel),
+            CreateCmp(v) => v.produce_rust(producer, parallel),
+            Log(v) => v.produce_rust(producer, parallel),
         }
     }
 }

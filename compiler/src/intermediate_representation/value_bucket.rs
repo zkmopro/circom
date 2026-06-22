@@ -2,6 +2,7 @@ use super::ir_interface::*;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 
 #[derive(Clone)]
 pub struct ValueBucket {
@@ -86,6 +87,15 @@ impl WriteC for ValueBucket {
                 };
                 (vec![], access)
             }
+        }
+    }
+}
+
+impl WriteRust for ValueBucket {
+    fn produce_rust(&self, _producer: &RustProducer, _parallel: Option<bool>) -> (Vec<String>, String) {
+        match self.parse_as {
+            ValueType::U32 => (vec![], self.value.to_string()),
+            ValueType::BigInt => (vec![], format!("ctx.circuit_constants[{}]", self.value)),
         }
     }
 }

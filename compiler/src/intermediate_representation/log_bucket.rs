@@ -2,6 +2,7 @@ use super::ir_interface::*;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 
 
 #[derive(Clone)]
@@ -151,12 +152,34 @@ impl WriteC for LogBucket {
             index += 1;
         }
         let print_end_line = build_call(
-            "printf".to_string(), 
+            "printf".to_string(),
             vec![format!("\"\\n\"")]
         );
         log_c.push("{".to_string());
         log_c.push(format!("{};", print_end_line));
         log_c.push("}".to_string());
         (log_c, "".to_string())
+    }
+}
+
+impl WriteRust for LogBucket {
+    fn produce_rust(&self, producer: &RustProducer, parallel: Option<bool>) -> (Vec<String>, String) {
+        let mut out = vec![];
+        let mut parts: Vec<String> = vec![];
+        for arg in &self.argsprint {
+            match arg {
+                LogBucketArg::LogExp(exp) => {
+                    let (mut code, expr) = exp.produce_rust(producer, parallel);
+                    out.append(&mut code);
+                    parts.push(format!("{{{}}}", expr));
+                }
+                LogBucketArg::LogStr(sid) => {
+                    let s = &producer.get_string_table()[*sid];
+                    parts.push(s.clone());
+                }
+            }
+        }
+        out.push(format!("eprintln!(\"{}\");", parts.join(" ")));
+        (out, String::new())
     }
 }

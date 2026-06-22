@@ -6,6 +6,7 @@ use crate::intermediate_representation::translate;
 use crate::intermediate_representation::translate::{CodeInfo, FieldTracker, TemplateDB, ParallelClusters};
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 use program_structure::file_definition::FileLibrary;
 use std::collections::{BTreeMap, HashMap};
 use program_structure::ast::SignalType;
@@ -55,8 +56,10 @@ fn build_template_instances(
             let xtype = cluster.xtype.clone();
             cmp_to_type.insert(name, xtype);
         }
-        circuit.wasm_producer.message_list.push(msg);
+        circuit.wasm_producer.message_list.push(msg.clone());
+        circuit.rust_producer.message_list.push(msg);
         circuit.c_producer.has_parallelism |= template.is_parallel || template.is_parallel_component;
+        circuit.rust_producer.has_parallelism |= template.is_parallel || template.is_parallel_component;
 
         let mut component_to_parallel: HashMap<String, ParallelClusters> = HashMap::new();
         for trigger in &template.triggers{
@@ -158,7 +161,8 @@ fn build_function_instances(
         let params = instance.params_types;
         let returns = instance.return_type;
         let id = circuit.wasm_producer.message_list.len();
-        circuit.wasm_producer.message_list.push(msg);
+        circuit.wasm_producer.message_list.push(msg.clone());
+        circuit.rust_producer.message_list.push(msg);
         let code_info = CodeInfo {
             field_tracker,
             header: header.clone(),
@@ -624,6 +628,32 @@ fn get_info_buses(buses: &Vec<BusInstance>)->(usize, FieldMap){
     (n_buses, bus_to_fields_data)
 }
 
+fn initialize_rust_producer(vcp: &VCP, database: &TemplateDB, version: &str) -> RustProducer {
+    use program_structure::utils::constants::UsefulConstants;
+    let initial_node = vcp.get_main_id();
+    let prime = UsefulConstants::new(&vcp.prime).get_p().clone();
+    let mut producer = RustProducer::default();
+    let stats = vcp.get_stats();
+    producer.main_header = vcp.get_main_instance().unwrap().template_header.clone();
+    producer.main_signal_offset = 1;
+    producer.prime = prime.to_str_radix(10);
+    producer.prime_str = vcp.prime.clone();
+    producer.total_number_of_signals = stats.all_signals + 1;
+    producer.number_of_components = stats.all_created_components;
+    producer.size_of_component_tree = stats.all_created_components * 3 + stats.all_needed_subcomponents_indexes;
+    producer.witness_to_signal_list = vcp.get_witness_list().clone();
+    producer.signals_in_witness = producer.witness_to_signal_list.len();
+    producer.number_of_main_inputs = vcp.templates[initial_node].number_of_inputs;
+    producer.number_of_main_outputs = vcp.templates[initial_node].number_of_outputs;
+    (producer.num_of_bus_instances, producer.busid_field_info) = get_info_buses(&vcp.buses);
+    producer.main_input_list = main_input_list(&vcp.templates[initial_node], &producer.busid_field_info);
+    producer.io_map = build_io_map(vcp, database);
+    producer.template_instance_list = build_template_list_parallel(vcp);
+    producer.field_tracking.clear();
+    (producer.major_version, producer.minor_version, producer.patch_version) = get_number_version(version);
+    producer
+}
+
 struct CircuitInfo {
     file_library: FileLibrary,
     functions: HashMap<String, Vec<usize>>,
@@ -642,6 +672,7 @@ pub fn build_circuit(vcp: VCP, flag: CompilationFlags, version: &str) -> Circuit
     let mut circuit = Circuit::default();
     circuit.wasm_producer = initialize_wasm_producer(&vcp, &template_database, flag.wat_flag, flag.sanity_check_style, version);
     circuit.c_producer = initialize_c_producer(&vcp, &template_database, flag.no_asm_flag, flag.sanity_check_style, version);
+    circuit.rust_producer = initialize_rust_producer(&vcp, &template_database, version);
 
     let field_tracker = FieldTracker::new();
     let circuit_info = CircuitInfo {
@@ -658,11 +689,13 @@ pub fn build_circuit(vcp: VCP, flag: CompilationFlags, version: &str) -> Circuit
 
     let table_usize_to_string = create_table_usize_to_string(table_string_to_usize);
     circuit.wasm_producer.set_string_table(table_usize_to_string.clone());
-    circuit.c_producer.set_string_table(table_usize_to_string);
+    circuit.c_producer.set_string_table(table_usize_to_string.clone());
+    circuit.rust_producer.set_string_table(table_usize_to_string);
     for i in 0..field_tracker.next_id() {
         let constant = field_tracker.get_constant(i).unwrap().clone();
         circuit.wasm_producer.field_tracking.push(constant.clone());
-        circuit.c_producer.field_tracking.push(constant);
+        circuit.c_producer.field_tracking.push(constant.clone());
+        circuit.rust_producer.field_tracking.push(constant);
     }
     for fun in &mut circuit.functions {
         set_arena_size_in_calls(&mut fun.body, &function_to_arena_size);

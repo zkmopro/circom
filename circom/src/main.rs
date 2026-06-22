@@ -51,11 +51,14 @@ fn start() -> Result<(), ()> {
         debug_output: user_input.print_ir_flag(),
         c_flag: user_input.c_flag(),
         wasm_flag: user_input.wasm_flag(),
+        rust_flag: user_input.rust_flag(),
         wat_flag: user_input.wat_flag(),
 	    js_folder: user_input.js_folder().to_string(),
 	    wasm_name: user_input.wasm_name().to_string(),
 	    c_folder: user_input.c_folder().to_string(),
 	    c_run_name: user_input.c_run_name().to_string(),
+        rust_folder: user_input.rust_folder().to_string(),
+        rust_run_name: user_input.rust_run_name().to_string(),
         c_file: user_input.c_file().to_string(),
         dat_file: user_input.dat_file().to_string(),
         wat_file: user_input.wat_file().to_string(),
@@ -63,7 +66,7 @@ fn start() -> Result<(), ()> {
         produce_input_log: user_input.main_inputs_flag(),
         sanity_check_style: user_input.sanity_check_style(),
         no_asm_flag: user_input.no_asm_flag(),
-        prime: user_input.prime(),        
+        prime: user_input.prime(),
     };
     compilation_user::compile(compilation_config)?;
     Result::Ok(())

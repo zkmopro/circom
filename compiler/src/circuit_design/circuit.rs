@@ -5,6 +5,7 @@ use crate::hir::very_concrete_program::VCP;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 use std::io::Write;
 
 pub struct CompilationFlags {
@@ -17,6 +18,7 @@ pub struct CompilationFlags {
 pub struct Circuit {
     pub wasm_producer: WASMProducer,
     pub c_producer: CProducer,
+    pub rust_producer: RustProducer,
     pub templates: Vec<TemplateCode>,
     pub functions: Vec<FunctionCode>,
 }
@@ -26,6 +28,7 @@ impl Default for Circuit {
         Circuit {
             c_producer: CProducer::default(),
             wasm_producer: WASMProducer::default(),
+            rust_producer: RustProducer::default(),
             templates: Vec::new(),
             functions: Vec::new(),
         }
@@ -616,5 +619,50 @@ impl Circuit {
         wasm_code_generator::generate_generate_witness_js_file(&js_folder_path).map_err(|_err| {})?;
         wasm_code_generator::generate_witness_calculator_js_file(&js_folder_path).map_err(|_err| {})?;
         self.write_wasm(writer, &self.wasm_producer)
+    }
+
+    pub fn produce_rust(&self, rust_folder: &str, run_name: &str) -> Result<(), ()> {
+        use std::path::PathBuf;
+        use std::fs;
+        use code_producers::rust_elements::rust_code_generator::*;
+
+        let folder = PathBuf::from(rust_folder);
+        let src_dir = folder.join("src");
+        fs::create_dir_all(&src_dir).map_err(|_| {})?;
+
+        // Copy runtime files
+        generate_field_rs_file(&folder).map_err(|_| {})?;
+        generate_calcwit_rs_file(&folder).map_err(|_| {})?;
+        generate_cargo_toml_file(&folder, run_name).map_err(|_| {})?;
+
+        // Generate lib.rs
+        let mut lib_code: Vec<String> = generate_lib_prologue();
+        lib_code.extend(generate_circuit_metadata(&self.rust_producer));
+        lib_code.extend(generate_constants_and_witness(&self.rust_producer));
+        lib_code.extend(generate_io_map_constants(&self.rust_producer));
+
+        // Emit function code
+        lib_code.push("// ─── Functions ──────────────────────────────────────────────────".to_string());
+        for f in &self.functions {
+            let (code, _) = f.produce_rust(&self.rust_producer, None);
+            lib_code.extend(code);
+        }
+
+        // Emit template create/run code
+        lib_code.push("// ─── Templates ──────────────────────────────────────────────────".to_string());
+        for t in &self.templates {
+            let code = t.produce_rust_code(&self.rust_producer);
+            lib_code.extend(code);
+        }
+
+        lib_code.extend(generate_function_table(&self.rust_producer));
+        lib_code.extend(generate_circuit_entry_and_init(&self.rust_producer));
+        lib_code.extend(generate_batch_fn());
+
+        let lib_contents = lib_code.join("\n");
+        let lib_path = src_dir.join("lib.rs");
+        fs::write(&lib_path, lib_contents).map_err(|_| {})?;
+
+        Ok(())
     }
 }

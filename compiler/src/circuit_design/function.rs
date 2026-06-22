@@ -4,6 +4,7 @@ use crate::intermediate_representation::InstructionList;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 //use std::io::Write;
 
 pub type FunctionCode = Box<FunctionCodeInfo>;
@@ -123,6 +124,30 @@ impl WriteC for FunctionCodeInfo {
         }
         let callable = build_callable(header, params, body);
         (vec![callable], "".to_string())
+    }
+}
+
+impl WriteRust for FunctionCodeInfo {
+    fn produce_rust(&self, producer: &RustProducer, _parallel: Option<bool>) -> (Vec<String>, String) {
+        let n_vars = self.max_number_of_vars;
+        let n_expaux = self.max_number_of_ops_in_expression;
+        let header = format!(
+            "#[allow(non_snake_case)]\nfn {}(ctx: &mut CircomCalcWit, lvar: &mut Vec<FrElement>, component_father: usize, destination: &mut Vec<FrElement>, destination_size: usize)",
+            self.header
+        );
+        let mut body = vec![
+            format!("let mut expaux: Vec<FrElement> = vec![FrElement::from(0u32); {}];", n_expaux),
+            "#[allow(unused_variables)]".to_string(),
+            "let my_signal_start = 0usize;".to_string(),
+            "#[allow(unused_variables)]".to_string(),
+            "let my_subcomponents: Vec<usize> = Vec::new();".to_string(),
+        ];
+        for t in &self.body {
+            let (mut code, _) = t.produce_rust(producer, Some(false));
+            body.append(&mut code);
+        }
+        let func = format!("{} {{\n{}\n}}", header, body.join("\n"));
+        (vec![func], String::new())
     }
 }
 

@@ -1,5 +1,6 @@
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 use std::io::Write;
 
 pub trait WriteC {
@@ -23,6 +24,25 @@ pub trait WriteWasm {
     fn write_wasm<T: Write>(&self, writer: &mut T, producer: &WASMProducer) -> Result<(), ()> {
         let wasm_instructions = self.produce_wasm(producer);
         let code = wasm_code_generator::merge_code(wasm_instructions);
+        writer.write_all(code.as_bytes()).map_err(|_| {})?;
+        writer.flush().map_err(|_| {})
+    }
+}
+
+pub trait WriteRust {
+    fn produce_rust(
+        &self,
+        producer: &RustProducer,
+        is_parallel: Option<bool>,
+    ) -> (Vec<String>, String);
+    fn write_rust<T: Write>(
+        &self,
+        writer: &mut T,
+        producer: &RustProducer,
+    ) -> Result<(), ()> {
+        use code_producers::rust_elements::rust_code_generator::merge_code;
+        let (instructions, _) = self.produce_rust(producer, None);
+        let code = merge_code(instructions);
         writer.write_all(code.as_bytes()).map_err(|_| {})?;
         writer.flush().map_err(|_| {})
     }

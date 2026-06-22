@@ -2,6 +2,7 @@ use super::ir_interface::*;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 
 #[derive(Clone)]
 pub struct CreateCmpBucket {
@@ -348,5 +349,63 @@ impl WriteC for CreateCmpBucket {
         }
         instructions.push("}".to_string());
         (instructions, "".to_string())
+    }
+}
+
+impl WriteRust for CreateCmpBucket {
+    fn produce_rust(&self, producer: &RustProducer, parallel: Option<bool>) -> (Vec<String>, String) {
+        let mut out = vec![];
+        let (mut id_code, id_expr) = self.sub_cmp_id.produce_rust(producer, parallel);
+        out.append(&mut id_code);
+        out.push("{".to_string());
+
+        let complete = self.defined_positions.len() == self.number_of_cmp;
+
+        if self.number_of_cmp > 1 {
+            out.push(format!("let _aux_create = {} as usize;", id_expr));
+            out.push(format!("let mut _aux_cmp_num = {} + ctx_index + 1;", self.component_offset));
+            out.push(format!("let mut _csoffset = my_signal_start + {};", self.signal_offset));
+            if complete {
+                out.push(format!("for _i in 0..{} {{", self.number_of_cmp));
+                out.push(format!(
+                    "{sym}_create(_csoffset, _aux_cmp_num, ctx, \"{name}\", ctx_index);",
+                    sym = self.symbol, name = self.name_subcomponent));
+                out.push(format!("my_subcomponents[_aux_create + _i] = _aux_cmp_num;"));
+                out.push(format!("_csoffset += {};", self.signal_offset_jump));
+                out.push(format!("_aux_cmp_num += {};", self.component_offset_jump));
+                out.push("}".to_string());
+            } else {
+                let pos_list: Vec<String> = self.defined_positions.iter()
+                    .map(|(p, _)| p.to_string()).collect();
+                out.push(format!("let _pos = [{}usize];", pos_list.join(", ")));
+                out.push(format!("for _i_aux in 0..{} {{", self.defined_positions.len()));
+                out.push("let _i = _pos[_i_aux];".to_string());
+                out.push(format!(
+                    "{sym}_create(_csoffset, _aux_cmp_num, ctx, \"{name}\", ctx_index);",
+                    sym = self.symbol, name = self.name_subcomponent));
+                out.push("my_subcomponents[_aux_create + _i] = _aux_cmp_num;".to_string());
+                out.push(format!("_csoffset += {};", self.signal_offset_jump));
+                out.push(format!("_aux_cmp_num += {};", self.component_offset_jump));
+                out.push("}".to_string());
+            }
+        } else {
+            let aux_cmp_num = format!("{} + ctx_index + 1", self.component_offset);
+            let csoffset = format!("my_signal_start + {}", self.signal_offset);
+            out.push(format!(
+                "{sym}_create({cs}, {cn}, ctx, \"{name}\", ctx_index);",
+                sym = self.symbol, cs = csoffset, cn = aux_cmp_num,
+                name = self.name_subcomponent));
+            out.push(format!("my_subcomponents[{} as usize] = {};", id_expr, aux_cmp_num));
+            if !self.has_inputs {
+                out.push(format!(
+                    "{{ let _cmp = my_subcomponents[{id} as usize]; \
+                     let _tid = ctx.component_memory[_cmp].template_id; \
+                     let _f = ctx.run_template; _f(_tid, _cmp, ctx); }}",
+                    id = id_expr));
+            }
+        }
+
+        out.push("}".to_string());
+        (out, String::new())
     }
 }

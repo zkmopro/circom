@@ -3,6 +3,7 @@ use crate::intermediate_representation::translate::OutBoundsCheck;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 
 #[derive(Clone)]
 pub struct StoreBucket {
@@ -902,5 +903,190 @@ impl WriteC for StoreBucket {
 	}
 
         (prologue, "".to_string())
+    }
+}
+
+impl WriteRust for StoreBucket {
+    fn produce_rust(&self, producer: &RustProducer, parallel: Option<bool>) -> (Vec<String>, String) {
+        use code_producers::rust_elements::rust_code_generator::add_offset_to_expr;
+        let mut prologue = vec![];
+        let l = self.line;
+
+        // Determine size
+        let size_expr: String = match &self.context.size {
+            SizeOption::Single(n) => n.to_string(),
+            SizeOption::Multiple(vals) => {
+                let arms: Vec<String> = vals.iter()
+                    .map(|(id, sz)| format!("{} => {}", id, sz)).collect();
+                format!("(match ctx.component_memory[my_subcomponents[cmp_index_ref]].template_id {{ {}, _ => 0 }})",
+                    arms.join(", "))
+            }
+        };
+        let src_size_expr: String = match &self.src_context.size {
+            SizeOption::Single(n) => n.to_string(),
+            SizeOption::Multiple(vals) => {
+                let arms: Vec<String> = vals.iter()
+                    .map(|(id, sz)| format!("{} => {}", id, sz)).collect();
+                format!("(match ctx.component_memory[my_subcomponents[cmp_index_ref]].template_id {{ {}, _ => 0 }})",
+                    arms.join(", "))
+            }
+        };
+
+        // cmp_index_ref for SubcmpSignal dest
+        if let AddressType::SubcmpSignal { cmp_address, .. } = &self.dest_address_type {
+            let (mut cmp_code, cmp_idx) = cmp_address.produce_rust(producer, parallel);
+            prologue.append(&mut cmp_code);
+            prologue.push("{".to_string());
+            prologue.push(format!("let cmp_index_ref = {} as usize;", cmp_idx));
+        }
+
+        // Compute destination index
+        let (dest_idx, template_header) = match &self.dest {
+            LocationRule::Indexed { location, template_header } => {
+                let (mut loc_code, loc_idx) = location.produce_rust(producer, parallel);
+                prologue.append(&mut loc_code);
+                (loc_idx, template_header.clone())
+            }
+            LocationRule::Mapped { signal_code, indexes } => {
+                prologue.push(format!(
+                    "let _io_def_{l} = &ctx.io_map[&ctx.component_memory[my_subcomponents[cmp_index_ref]].template_id][{sc}];",
+                    l = l, sc = signal_code));
+                prologue.push(format!("let mut _map_off_{} = _io_def_{}.0;", l, l));
+                let mut idxpos = 0;
+                while idxpos < indexes.len() {
+                    match &indexes[idxpos] {
+                        AccessType::Indexed(index_info) => {
+                            let index_list = &index_info.indexes;
+                            let dim = index_info.symbol_dim;
+                            let (mut c0, mut idx_expr) = index_list[0].produce_rust(producer, parallel);
+                            prologue.append(&mut c0);
+                            for i in 1..index_list.len() {
+                                let (mut ci, idx_i) = index_list[i].produce_rust(producer, parallel);
+                                prologue.append(&mut ci);
+                                idx_expr = format!("(({}) * _io_def_{}.2[{}]) + ({})", idx_expr, l, i-1, idx_i);
+                            }
+                            let diff = dim - index_list.len();
+                            if diff > 0 {
+                                for k in index_list.len()..dim {
+                                    idx_expr = format!("({}) * _io_def_{}.2[{}]", idx_expr, l, k-1);
+                                }
+                            }
+                            prologue.push(format!("_map_off_{l} += ({ie}) * _io_def_{l}.1;", l=l, ie=idx_expr));
+                            idxpos += 1;
+                            if idxpos < indexes.len() {
+                                if let AccessType::Qualified(fno) = &indexes[idxpos] {
+                                    prologue.push(format!(
+                                        "_map_off_{l} += ctx.bus_field_info[_io_def_{l}.3.unwrap()][{fno}].0;",
+                                        l=l, fno=fno));
+                                    idxpos += 1;
+                                }
+                            }
+                        }
+                        AccessType::Qualified(fno) => {
+                            prologue.push(format!(
+                                "_map_off_{l} += ctx.bus_field_info[_io_def_{l}.3.unwrap()][{fno}].0;",
+                                l=l, fno=fno));
+                            idxpos += 1;
+                        }
+                    }
+                }
+                (format!("_map_off_{}", l), None)
+            }
+        };
+
+        // Compute source expression
+        let (mut src_code, src_expr) = self.src.produce_rust(producer, parallel);
+        prologue.append(&mut src_code);
+
+        // Minimum size to copy
+        let min_size = match (&self.context.size, &self.src_context.size) {
+            (SizeOption::Single(d), SizeOption::Single(s)) => std::cmp::min(*d, *s).to_string(),
+            _ => format!("std::cmp::min({}, {})", size_expr, src_size_expr),
+        };
+
+        // Generate copy
+        let dest_access = |idx_expr: &str, offset: &str| -> String {
+            let idxoff = if offset == "0" {
+                format!("{} as usize", idx_expr)
+            } else {
+                format!("({} as usize) + {}", idx_expr, offset)
+            };
+            match &self.dest_address_type {
+                AddressType::Variable => format!("lvar[{}]", idxoff),
+                AddressType::Signal => format!("ctx.signal_values[my_signal_start + {}]", idxoff),
+                AddressType::SubcmpSignal { .. } => format!(
+                    "ctx.signal_values[ctx.component_memory[my_subcomponents[cmp_index_ref]].signal_start + {}]",
+                    idxoff
+                ),
+            }
+        };
+
+        if min_size == "0" {
+            // nothing to copy
+        } else if min_size == "1" {
+            // Extract dest index to a temp to avoid Rust two-phase borrow conflicts
+            // when the index expression itself reads from the same slice being written.
+            if matches!(&self.dest_address_type, AddressType::Variable) {
+                prologue.push(format!("{{ let _idx_{l} = {di} as usize; lvar[_idx_{l}] = {se}.clone(); }}",
+                    l = l, di = dest_idx, se = src_expr));
+            } else {
+                let dest = dest_access(&dest_idx, "0");
+                prologue.push(format!("{} = {}.clone();", dest, src_expr));
+            }
+        } else {
+            prologue.push("{".to_string());
+            // _bs_ (base-source) was dead code and caused move-out-of-Vec errors; removed.
+            prologue.push(format!("let _bd_{l} = {di} as usize;",
+                l = l, di = dest_idx));
+            prologue.push(format!("for _ci_{l} in 0..{sz} {{", l = l, sz = min_size));
+            let dest_loop = match &self.dest_address_type {
+                AddressType::Variable => format!("lvar[_bd_{l} + _ci_{l}]", l = l),
+                AddressType::Signal => format!("ctx.signal_values[my_signal_start + _bd_{l} + _ci_{l}]", l = l),
+                AddressType::SubcmpSignal { .. } => format!(
+                    "ctx.signal_values[ctx.component_memory[my_subcomponents[cmp_index_ref]].signal_start + _bd_{l} + _ci_{l}]",
+                    l = l),
+            };
+            let src_loop = add_offset_to_expr(&src_expr, &format!("_ci_{}", l));
+            prologue.push(format!("{} = {}.clone();", dest_loop, src_loop));
+            prologue.push("}".to_string());
+            prologue.push("}".to_string());
+        }
+
+        // Handle SubcmpSignal counter + potential run
+        if let AddressType::SubcmpSignal { input_information, .. } = &self.dest_address_type {
+            if let InputInformation::Input { status, needs_decrement } = input_information {
+                match status {
+                    StatusInput::SizeZero => {}
+                    StatusInput::NoLast => {
+                        if *needs_decrement {
+                            prologue.push(format!(
+                                "ctx.component_memory[my_subcomponents[cmp_index_ref]].input_counter -= {} as usize;",
+                                min_size));
+                        }
+                    }
+                    StatusInput::Last => {
+                        prologue.push(format!(
+                            "{{ let _cmp = my_subcomponents[cmp_index_ref]; \
+                             ctx.component_memory[_cmp].input_counter -= {} as usize; \
+                             let _tid = ctx.component_memory[_cmp].template_id; \
+                             let _f = ctx.run_template; _f(_tid, _cmp, ctx); }}", min_size));
+                    }
+                    StatusInput::Unknown => {
+                        let decrement_str = format!("{} as usize", min_size);
+                        prologue.push(format!(
+                            "{{ let _cmp = my_subcomponents[cmp_index_ref]; \
+                             ctx.component_memory[_cmp].input_counter -= {dec}; \
+                             if ctx.component_memory[_cmp].input_counter == 0 {{ \
+                             let _tid = ctx.component_memory[_cmp].template_id; \
+                             let _f = ctx.run_template; _f(_tid, _cmp, ctx); }} }}",
+                             dec = decrement_str));
+                    }
+                }
+            }
+            prologue.push("}".to_string());
+        }
+
+        let _ = template_header;
+        (prologue, String::new())
     }
 }

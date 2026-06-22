@@ -13,10 +13,13 @@ pub struct Input {
     pub out_c_folder: PathBuf,
     pub out_c_code: PathBuf,
     pub out_c_dat: PathBuf,
+    pub out_rust_run_name: String,
+    pub out_rust_folder: PathBuf,
     pub out_sym: PathBuf,
     //pub field: &'static str,
     pub c_flag: bool,
     pub wasm_flag: bool,
+    pub rust_flag: bool,
     pub wat_flag: bool,
     pub no_asm_flag: bool,
     pub sanity_check_style: usize,
@@ -47,6 +50,7 @@ const JS: &'static str = "js";
 const DAT: &'static str = "dat";
 const SYM: &'static str = "sym";
 const JSON: &'static str = "json";
+const RUST: &'static str = "rust";
 
 
 impl Input {
@@ -59,6 +63,7 @@ impl Input {
         let output_path = input_processing::get_output_path(&matches)?;
 
         let c_flag = input_processing::get_c(&matches);
+        let rust_flag = input_processing::get_rust(&matches);
 
         if c_flag && (file_name == "main" || file_name == "fr" || file_name == "calcwit"){
             println!("{}", Colour::Yellow.paint(format!("The name {} is reserved in Circom when using de --c flag. The files generated for your circuit will use the name {}_c instead of {}.", file_name, file_name, file_name)));
@@ -66,6 +71,7 @@ impl Input {
         };
         let output_c_path = Input::build_folder(&output_path, &file_name, CPP);
         let output_js_path = Input::build_folder(&output_path, &file_name, JS);
+        let output_rust_path = Input::build_folder(&output_path, &file_name, RUST);
         let o_style = input_processing::get_simplification_style(&matches)?;
         let sanity_check_style = input_processing::get_sanity_check_style(&matches)?;
         let link_libraries = input_processing::get_link_libraries(&matches);
@@ -81,6 +87,8 @@ impl Input {
 	        out_c_run_name: file_name.clone(),
             out_c_code: Input::build_output(&output_c_path, &file_name, CPP),
             out_c_dat: Input::build_output(&output_c_path, &file_name, DAT),
+            out_rust_folder: output_rust_path.clone(),
+            out_rust_run_name: file_name.clone(),
             out_sym: Input::build_output(&output_path, &file_name, SYM),
             out_json_constraints: Input::build_output(
                 &output_path,
@@ -95,6 +103,7 @@ impl Input {
             wat_flag:input_processing::get_wat(&matches),
             wasm_flag: input_processing::get_wasm(&matches),
             c_flag: c_flag,
+            rust_flag: rust_flag,
             no_asm_flag:input_processing::get_no_asm(&matches),
             sanity_check_style: sanity_check_style as usize,
             r1cs_flag: input_processing::get_r1cs(&matches),
@@ -167,6 +176,15 @@ impl Input {
     }
     pub fn dat_file(&self) -> &str {
         self.out_c_dat.to_str().unwrap()
+    }
+    pub fn rust_folder(&self) -> &str {
+        self.out_rust_folder.to_str().unwrap()
+    }
+    pub fn rust_run_name(&self) -> String {
+        self.out_rust_run_name.clone()
+    }
+    pub fn rust_flag(&self) -> bool {
+        self.rust_flag
     }
     pub fn json_constraints_file(&self) -> &str {
         self.out_json_constraints.to_str().unwrap()
@@ -340,6 +358,10 @@ mod input_processing {
 
     pub fn get_c(matches: &ArgMatches) -> bool {
         matches.is_present("print_c")
+    }
+
+    pub fn get_rust(matches: &ArgMatches) -> bool {
+        matches.is_present("print_rust")
     }
 
     pub fn get_main_inputs_log(matches: &ArgMatches) -> bool {
@@ -534,6 +556,13 @@ mod input_processing {
                     .takes_value(false)
                     .display_order(150)
                     .help("Compiles the circuit to C++"),
+            )
+            .arg(
+                Arg::with_name("print_rust")
+                    .long("rust")
+                    .takes_value(false)
+                    .display_order(160)
+                    .help("Compiles the circuit to Rust witness generation code"),
             )
             .arg(
                 Arg::with_name("parallel_simplification")

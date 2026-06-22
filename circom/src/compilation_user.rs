@@ -16,9 +16,12 @@ pub struct CompilerConfig {
     pub c_run_name: String,
     pub c_file: String,
     pub dat_file: String,
+    pub rust_folder: String,
+    pub rust_run_name: String,
     pub wat_flag: bool,
     pub wasm_flag: bool,
     pub c_flag: bool,
+    pub rust_flag: bool,
     pub debug_output: bool,
     pub produce_input_log: bool,
     pub vcp: VCP,
@@ -31,7 +34,7 @@ pub struct CompilerConfig {
 pub fn compile(config: CompilerConfig) -> Result<(), ()> {
 
 
-    if config.c_flag || config.wat_flag || config.wasm_flag{
+    if config.c_flag || config.wat_flag || config.wasm_flag || config.rust_flag {
         let circuit = compiler_interface::run_compiler(
             config.vcp,
             Config { 
@@ -97,6 +100,15 @@ pub fn compile(config: CompilerConfig) -> Result<(), ()> {
                 }
             }
         }
+        if config.rust_flag {
+            compiler_interface::write_rust(&circuit, &config.rust_folder, &config.rust_run_name)?;
+            println!(
+                "{} {}/src/lib.rs",
+                Colour::Green.paint("Written successfully:"),
+                config.rust_folder,
+            );
+        }
+
         match (config.wat_flag, config.wasm_flag) {
             (true, true) => {
                 compiler_interface::write_wasm(&circuit, &config.js_folder, &config.wasm_name, &config.wat_file)?;

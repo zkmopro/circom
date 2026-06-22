@@ -36,6 +36,15 @@ pub fn write_wasm(circuit: &Circuit, js_folder: &str, wasm_name: &str, file: &st
     circuit.produce_wasm(js_folder, wasm_name, &mut writer)
 }
 
+pub fn write_rust(circuit: &Circuit, rust_folder: &str, rust_run_name: &str) -> Result<(), ()> {
+    use std::path::Path;
+    if Path::new(rust_folder).is_dir() {
+        std::fs::remove_dir_all(rust_folder).map_err(|_err| {})?;
+    }
+    std::fs::create_dir(rust_folder).map_err(|_err| {})?;
+    circuit.produce_rust(rust_folder, rust_run_name)
+}
+
 pub fn write_c(circuit: &Circuit, c_folder: &str, c_run_name: &str, c_file: &str, dat_file: &str) -> Result<(), ()> {
     use std::path::Path;
     if Path::new(c_folder).is_dir() {

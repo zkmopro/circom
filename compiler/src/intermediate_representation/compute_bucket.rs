@@ -2,6 +2,7 @@ use super::ir_interface::*;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum OperatorType {
@@ -463,5 +464,107 @@ impl WriteC for ComputeBucket {
         }
 	//compute_c.push(format!("// end of compute with result {}",result));
         (compute_c, result)
+    }
+}
+
+impl WriteRust for ComputeBucket {
+    fn produce_rust(&self, producer: &RustProducer, parallel: Option<bool>) -> (Vec<String>, String) {
+        use code_producers::rust_elements::rust_code_generator::add_offset_to_expr;
+
+        fn get_rust_fr_op(op: &OperatorType) -> &'static str {
+            match op {
+                OperatorType::Add => "add",
+                OperatorType::Div => "div",
+                OperatorType::Mul => "mul",
+                OperatorType::Sub => "sub",
+                OperatorType::Pow => "pow",
+                OperatorType::IntDiv => "idiv",
+                OperatorType::Mod => "mod",
+                OperatorType::ShiftL => "shl",
+                OperatorType::ShiftR => "shr",
+                OperatorType::LesserEq => "leq",
+                OperatorType::GreaterEq => "geq",
+                OperatorType::Lesser => "lt",
+                OperatorType::Greater => "gt",
+                OperatorType::Eq(_) => "eq",
+                OperatorType::NotEq => "neq",
+                OperatorType::BoolOr => "lor",
+                OperatorType::BoolAnd => "land",
+                OperatorType::BitOr => "bor",
+                OperatorType::BitAnd => "band",
+                OperatorType::BitXor => "bxor",
+                OperatorType::PrefixSub => "neg",
+                OperatorType::BoolNot => "lnot",
+                OperatorType::Complement => "bnot",
+                _ => unreachable!(),
+            }
+        }
+
+        let mut instructions = vec![];
+        let mut operands = vec![];
+        for instr in &self.stack {
+            let (mut c, op) = instr.produce_rust(producer, parallel);
+            instructions.append(&mut c);
+            operands.push(op);
+        }
+
+        let result;
+        match &self.op {
+            OperatorType::AddAddress => {
+                result = format!("({} + {})", operands[0], operands[1]);
+            }
+            OperatorType::MulAddress => {
+                result = format!("({} * {})", operands[0], operands[1]);
+            }
+            OperatorType::ToAddress => {
+                result = format!("fr_to_int(&{}, &ctx.prime)", operands[0]);
+            }
+            OperatorType::Eq(n) => {
+                let exp_idx = self.op_aux_no;
+                let result_expr = format!("expaux[{}]", exp_idx);
+                instructions.push(format!("expaux[{}] = fr_eq(&{}, &{}, &ctx.prime);",
+                    exp_idx, operands[0], operands[1]));
+
+                let size_expr: String = match n {
+                    SizeOption::Single(v) => v.to_string(),
+                    SizeOption::Multiple(vals) => {
+                        let arms: Vec<String> = vals.iter()
+                            .map(|(id, sz)| format!("{} => {}", id, sz)).collect();
+                        format!("(match ctx.component_memory[my_subcomponents[cmp_index_ref_load]].template_id {{ {}, _ => 0 }})",
+                            arms.join(", "))
+                    }
+                };
+                if size_expr != "1" {
+                    instructions.push("{".to_string());
+                    instructions.push(format!("let mut _idx_meq_{} = 1usize;", self.line));
+                    instructions.push(format!(
+                        "while _idx_meq_{line} < {sz} && fr_is_true(&expaux[{ei}]) {{",
+                        line = self.line, sz = size_expr, ei = exp_idx));
+                    let op0i = add_offset_to_expr(&operands[0], &format!("_idx_meq_{}", self.line));
+                    let op1i = add_offset_to_expr(&operands[1], &format!("_idx_meq_{}", self.line));
+                    instructions.push(format!("expaux[{}] = fr_eq(&{}, &{}, &ctx.prime);",
+                        exp_idx, op0i, op1i));
+                    instructions.push(format!("_idx_meq_{} += 1;", self.line));
+                    instructions.push("}".to_string());
+                    instructions.push("}".to_string());
+                }
+                result = result_expr;
+            }
+            op => {
+                let op_name = get_rust_fr_op(op);
+                let exp_idx = self.op_aux_no;
+                let is_unary = matches!(op,
+                    OperatorType::PrefixSub | OperatorType::BoolNot | OperatorType::Complement);
+                if is_unary {
+                    instructions.push(format!("expaux[{}] = fr_{}(&{}, &ctx.prime);",
+                        exp_idx, op_name, operands[0]));
+                } else {
+                    instructions.push(format!("expaux[{}] = fr_{}(&{}, &{}, &ctx.prime);",
+                        exp_idx, op_name, operands[0], operands[1]));
+                }
+                result = format!("expaux[{}]", exp_idx);
+            }
+        }
+        (instructions, result)
     }
 }

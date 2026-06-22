@@ -2,6 +2,7 @@ use super::ir_interface::*;
 use crate::translating_traits::*;
 use code_producers::c_elements::*;
 use code_producers::wasm_elements::*;
+use code_producers::rust_elements::*;
 
 #[derive(Clone)]
 pub struct BranchBucket {
@@ -119,5 +120,31 @@ impl WriteC for BranchBucket {
         let mut c_branch = condition_code;
         c_branch.push(conditional);
         (c_branch, "".to_string())
+    }
+}
+
+impl WriteRust for BranchBucket {
+    fn produce_rust(&self, producer: &RustProducer, parallel: Option<bool>) -> (Vec<String>, String) {
+        let (mut cond_code, cond_expr) = self.cond.produce_rust(producer, parallel);
+        let mut if_body = vec![];
+        for instr in &self.if_branch {
+            let (mut code, _) = instr.produce_rust(producer, parallel);
+            if_body.append(&mut code);
+        }
+        let mut else_body = vec![];
+        for instr in &self.else_branch {
+            let (mut code, _) = instr.produce_rust(producer, parallel);
+            else_body.append(&mut code);
+        }
+        let mut out = vec![];
+        out.append(&mut cond_code);
+        out.push(format!("if fr_is_true(&{}) {{", cond_expr));
+        out.extend(if_body);
+        if !else_body.is_empty() {
+            out.push("} else {".to_string());
+            out.extend(else_body);
+        }
+        out.push("}".to_string());
+        (out, String::new())
     }
 }
